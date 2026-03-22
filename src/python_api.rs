@@ -111,13 +111,12 @@ use crate::connectors::data_lake::{DeltaBatchWriter, MaintenanceMode};
 use crate::connectors::data_storage::{
     ConnectorMode, DeltaTableReader, ElasticSearchWriter, FileWriter, IcebergReader, KafkaReader,
     KafkaWriter, LakeWriter, MessageQueueTopic, MongoWriter, MqttReader, MqttWriter,
-    MssqlCdcReader, MssqlReader, MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
+    MysqlWriter, NatsReader, NatsWriter, NullWriter, ObjectDownloader,
     PsqlReader, PsqlWriter, PythonConnectorEventType, PythonReaderBuilder, QuestDBAtColumnPolicy,
     QuestDBWriter, RdkafkaWatermark, ReadError, ReadMethod, ReaderBuilder, SqliteReader,
     TableWriterInitMode, WriteError, Writer, MQTT_CLIENT_MAX_CHANNEL_SIZE,
 };
 use crate::connectors::data_tokenize::{BufReaderTokenizer, CsvTokenizer, Tokenize};
-use crate::connectors::mssql::MssqlWriter;
 use crate::connectors::nats;
 use crate::connectors::posix_like::PosixLikeReader;
 use crate::connectors::scanner::{FilesystemScanner, S3Scanner};
@@ -4398,6 +4397,47 @@ impl ElasticSearchAuth {
 }
 
 #[pyclass(module = "pathway.engine", frozen)]
+#[derive(Debug, Clone)]
+pub struct MilvusParams {
+    uri: String,
+    collection_name: String,
+    primary_key_column: String,
+    vector_columns: HashMap<String, HashMap<String, String>>,
+    token: Option<String>,
+    create_collection_if_missing: bool,
+}
+
+#[pymethods]
+impl MilvusParams {
+    #[new]
+    #[pyo3(signature = (
+        uri,
+        collection_name,
+        primary_key_column,
+        vector_columns,
+        token = None,
+        create_collection_if_missing = true,
+    ))]
+    fn new(
+        uri: String,
+        collection_name: String,
+        primary_key_column: String,
+        vector_columns: HashMap<String, HashMap<String, String>>,
+        token: Option<String>,
+        create_collection_if_missing: bool,
+    ) -> Self {
+        MilvusParams {
+            uri,
+            collection_name,
+            primary_key_column,
+            vector_columns,
+            token,
+            create_collection_if_missing,
+        }
+    }
+}
+
+#[pyclass(module = "pathway.engine", frozen)]
 #[derive(Debug)]
 pub struct ElasticSearchParams {
     host: String,
@@ -4568,6 +4608,7 @@ pub struct DataStorage {
     snapshot_maintenance_on_output: bool,
     aws_s3_settings: Option<Arc<Py<AwsS3Settings>>>,
     elasticsearch_params: Option<Arc<Py<ElasticSearchParams>>>,
+    milvus_params: Option<Arc<Py<MilvusParams>>>,
     parallel_readers: Option<usize>,
     python_subject: Option<Arc<Py<PythonSubject>>>,
     unique_name: Option<UniqueName>,
@@ -5130,6 +5171,7 @@ impl DataStorage {
         snapshot_maintenance_on_output = false,
         aws_s3_settings = None,
         elasticsearch_params = None,
+        milvus_params = None,
         parallel_readers = None,
         python_subject = None,
         unique_name = None,
@@ -5176,6 +5218,7 @@ impl DataStorage {
         snapshot_maintenance_on_output: bool,
         aws_s3_settings: Option<Py<AwsS3Settings>>,
         elasticsearch_params: Option<Py<ElasticSearchParams>>,
+        milvus_params: Option<Py<MilvusParams>>,
         parallel_readers: Option<usize>,
         python_subject: Option<Py<PythonSubject>>,
         unique_name: Option<UniqueName>,
@@ -5220,6 +5263,7 @@ impl DataStorage {
             snapshot_maintenance_on_output,
             aws_s3_settings: aws_s3_settings.map(Into::into),
             elasticsearch_params: elasticsearch_params.map(Into::into),
+            milvus_params: milvus_params.map(Into::into),
             parallel_readers,
             python_subject: python_subject.map(Into::into),
             unique_name,
@@ -6505,6 +6549,74 @@ impl DataStorage {
         Ok(Box::new(writer))
     }
 
+    fn construct_milvus_writer(
+        &self,
+        py: pyo3::Python,
+        data_format: &DataFormat,
+    ) -> PyResult<Box<dyn Writer>> {
+        use crate::connectors::milvus::{MilvusFieldType, MilvusWriter, VectorColumnConfig};
+
+        let milvus_params_py: &Py<_> = self
+            .milvus_params
+            .as_ref()
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "For milvus output, milvus_params section must be specified",
+                )
+            })?
+            .borrow();
+        let params = milvus_params_py.get();
+
+        // Convert vector_columns from Python dicts to VectorColumnConfig
+        let mut vector_columns = HashMap::new();
+        for (name, config) in &params.vector_columns {
+            let type_str = config.get("type").map(|s| s.as_str()).unwrap_or("FLOAT_VECTOR");
+            let milvus_type = match type_str {
+                "BINARY_VECTOR" => MilvusFieldType::BinaryVector,
+                _ => MilvusFieldType::FloatVector,
+            };
+            let dimension = config
+                .get("dimension")
+                .and_then(|s| s.parse::<i64>().ok());
+            let index_type = config
+                .get("index_type")
+                .cloned()
+                .unwrap_or_else(|| "FLAT".to_string());
+            let metric_type = config
+                .get("metric_type")
+                .cloned()
+                .unwrap_or_else(|| "IP".to_string());
+
+            vector_columns.insert(
+                name.clone(),
+                VectorColumnConfig {
+                    milvus_type,
+                    dimension,
+                    index_type,
+                    metric_type,
+                },
+            );
+        }
+
+        let value_field_names = data_format.value_field_names(py);
+
+        let writer = MilvusWriter::new(
+            params.uri.clone(),
+            params.collection_name.clone(),
+            params.primary_key_column.clone(),
+            vector_columns,
+            value_field_names,
+            self.max_batch_size,
+            params.create_collection_if_missing,
+            params.token.clone(),
+        )
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to create Milvus writer: {e}"))
+        })?;
+
+        Ok(Box::new(writer))
+    }
+
     fn construct_deltalake_writer(
         &self,
         py: pyo3::Python,
@@ -6854,6 +6966,7 @@ impl DataStorage {
             "kafka" => self.construct_kafka_writer(),
             "postgres" => self.construct_postgres_writer(py, data_format),
             "elasticsearch" => self.construct_elasticsearch_writer(py, license),
+            "milvus" => self.construct_milvus_writer(py, data_format),
             "deltalake" => self.construct_deltalake_writer(py, data_format, license),
             "mongodb" => self.construct_mongodb_writer(),
             "null" => Ok(Box::new(NullWriter::new())),
@@ -7490,6 +7603,7 @@ fn engine(_py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_class::<AwsS3Settings>()?;
     m.add_class::<AzureBlobStorageSettings>()?;
     m.add_class::<ElasticSearchParams>()?;
+    m.add_class::<MilvusParams>()?;
     m.add_class::<ElasticSearchAuth>()?;
     m.add_class::<CsvParserSettings>()?;
     m.add_class::<ValueField>()?;

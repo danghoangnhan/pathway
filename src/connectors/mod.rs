@@ -24,6 +24,7 @@ pub mod data_lake;
 pub mod data_storage;
 pub mod data_tokenize;
 pub mod elasticsearch;
+pub mod milvus;
 pub mod metadata;
 pub mod monitoring;
 pub mod mssql;

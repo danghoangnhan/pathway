@@ -697,6 +697,9 @@ pub enum WriteError {
     #[error("elasticsearch client error: {0:?}")]
     Elasticsearch(elasticsearch::Error),
 
+    #[error("milvus error: {0}")]
+    Milvus(String),
+
     #[error(transparent)]
     Persistence(#[from] PersistenceBackendError),
 

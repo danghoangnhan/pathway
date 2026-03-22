@@ -88,7 +88,10 @@ def main():
         collection_name=COLLECTION_NAME,
         primary_key_column="product_id",
         vector_columns={
-            "vector": {"type": pw.io.milvus.MilvusType.FLOAT_VECTOR, "dimension": DIMENSION},
+            "vector": {
+                "type": pw.io.milvus.MilvusType.FLOAT_VECTOR, 
+                "dimension": DIMENSION
+            },
         },
     )
 
