@@ -1,0 +1,123 @@
+services:
+  # --- PostgreSQL (source of truth) ---
+  postgres:
+    container_name: cdc-sync-postgres
+    image: debezium/postgres:13
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=products_db
+      - PGPASSWORD=password
+    volumes:
+      - ./sql/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./sql/simulate_changes.sh:/simulate_changes.sh
+    ports:
+      - "5432:5432"
+
+  # --- Kafka stack (CDC transport) ---
+  zookeeper:
+    container_name: cdc-sync-zookeeper
+    image: confluentinc/cp-zookeeper:5.5.3
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+
+  kafka:
+    container_name: cdc-sync-kafka
+    image: confluentinc/cp-enterprise-kafka:5.5.3
+    depends_on: [zookeeper]
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      CONFLUENT_SUPPORT_METRICS_ENABLE: "false"
+
+  debezium:
+    container_name: cdc-sync-debezium
+    image: debezium/connect:1.4
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+    volumes:
+      - ./debezium/connector.sh:/kafka/connector.sh
+    depends_on: [kafka]
+
+  # --- Milvus stack (vector sink) ---
+  etcd:
+    container_name: cdc-sync-etcd
+    image: quay.io/coreos/etcd:v3.5.16
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    container_name: cdc-sync-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  milvus:
+    container_name: cdc-sync-milvus
+    image: milvusdb/milvus:v2.5.0
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 90s
+
+  # --- Pathway (ETL pipeline) ---
+  pathway:
+    container_name: cdc-sync-pathway
+    build:
+      context: .
+      dockerfile: ./pathway-src/Dockerfile
+    depends_on:
+      kafka:
+        condition: service_started
+      milvus:
+        condition: service_healthy
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:

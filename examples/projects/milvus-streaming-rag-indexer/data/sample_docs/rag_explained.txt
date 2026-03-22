@@ -1,0 +1,23 @@
+Retrieval-Augmented Generation Explained
+
+Retrieval-augmented generation (RAG) is a technique that enhances large language models by providing them with relevant external knowledge at query time. Instead of relying solely on information encoded in the model's parameters during training, RAG systems retrieve pertinent documents from a knowledge base and include them as context when generating responses.
+
+The RAG Pipeline
+
+A typical RAG pipeline consists of several stages. First, during the indexing phase, source documents are collected, split into manageable chunks, and each chunk is converted into a vector embedding using an embedding model. These embeddings are stored in a vector database along with the original text and metadata.
+
+When a user submits a query, the retrieval phase begins. The query is embedded using the same model, and the vector database performs a similarity search to find the most relevant document chunks. These retrieved chunks are then assembled into a prompt alongside the original query.
+
+Finally, in the generation phase, a large language model processes the augmented prompt and produces a response grounded in the retrieved information. This approach significantly reduces hallucinations because the model can reference specific source material rather than generating answers from memory alone.
+
+Benefits of RAG Over Fine-Tuning
+
+RAG offers several advantages compared to fine-tuning a model on domain-specific data. The knowledge base can be updated in real time without retraining the model, which is particularly valuable for rapidly changing information. RAG systems are also more transparent because they can cite the specific sources used to generate each response, enabling users to verify claims.
+
+Additionally, RAG is more cost-effective than fine-tuning for many use cases. Organizations can use a general-purpose language model and customize its behavior simply by controlling which documents are available for retrieval. This separation of knowledge from reasoning capability makes RAG systems flexible and maintainable.
+
+Challenges and Best Practices
+
+Building effective RAG systems requires careful attention to several factors. Chunking strategy affects retrieval quality: chunks that are too small may lack context, while chunks that are too large may dilute the relevant information. Embedding model selection matters because different models capture different aspects of semantic similarity.
+
+Hybrid search approaches that combine dense vector search with sparse keyword matching often outperform either method alone. Metadata filtering can narrow the search space to relevant documents before performing similarity search. And reranking retrieved results with a cross-encoder model can significantly improve the final selection quality.
