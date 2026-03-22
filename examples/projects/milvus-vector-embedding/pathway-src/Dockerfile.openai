@@ -1,0 +1,5 @@
+FROM pathwaycom/pathway:latest
+RUN pip install --no-cache-dir "pymilvus>=2.5.0" "openai>=1.0.0"
+WORKDIR /app
+COPY pathway-src/app_openai_embed.py app.py
+CMD ["python", "app.py"]

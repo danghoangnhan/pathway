@@ -1,0 +1,5 @@
+FROM pathwaycom/pathway:latest
+RUN pip install --no-cache-dir "pymilvus[model]>=2.5.0"
+WORKDIR /app
+COPY pathway-src/app_pymilvus_embed.py app.py
+CMD ["python", "app.py"]
