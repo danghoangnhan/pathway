@@ -4,11 +4,10 @@
 #
 # Computes both dense embeddings (SentenceTransformer) and sparse TF vectors
 # (hash-based term frequency) in a single Pathway pipeline. Writes both to a
-# multi-vector Milvus collection via a custom hybrid writer.
+# multi-vector Milvus collection using pw.io.milvus.write().
 #
 # This demonstrates:
 #   - Parallel dual-embedding computation in one declarative pipeline
-#   - Custom Milvus writer extending the pw.io.subscribe() pattern
 #   - Hybrid search combining semantic and keyword retrieval
 
 import math
@@ -17,8 +16,6 @@ from collections import Counter
 
 import pathway as pw
 from pathway.xpacks.llm.embedders import SentenceTransformerEmbedder
-
-from hybrid_milvus_writer import write_hybrid
 
 # To use advanced features with Pathway Scale, get your free license key from
 # https://pathway.com/features and paste it below.
@@ -209,15 +206,21 @@ def main():
         sparse_vector=compute_sparse(pw.this.text),
     )
 
-    # Write to Milvus with custom hybrid writer
-    write_hybrid(
+    # Write to Milvus with dense + sparse vectors
+    pw.io.milvus.write(
         embedded,
         uri=MILVUS_URI,
         collection_name=COLLECTION_NAME,
         primary_key_column="doc_id",
-        dense_vector_column="dense_vector",
-        sparse_vector_column="sparse_vector",
-        dense_dimension=DENSE_DIMENSION,
+        vector_columns={
+            "dense_vector": {
+                "type": pw.io.milvus.MilvusType.FLOAT_VECTOR,
+                "dimension": DENSE_DIMENSION,
+            },
+            "sparse_vector": {
+                "type": pw.io.milvus.MilvusType.SPARSE_FLOAT_VECTOR,
+            },
+        },
     )
 
     pw.run()

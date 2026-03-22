@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import logging
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -15,7 +16,53 @@ if TYPE_CHECKING:
     from pathway.internals.table import Table
 
 
-class _MilvusOutputBuffer:
+class MilvusType(enum.IntEnum):
+    """Milvus field data types for use with :py:func:`pw.io.milvus.write`.
+
+    Pathway-native Milvus type definitions so that users do not need to
+    import pymilvus directly.
+
+    Vector types (for ``vector_columns``):
+        ``BINARY_VECTOR``, ``FLOAT_VECTOR``, ``FLOAT16_VECTOR``,
+        ``BFLOAT16_VECTOR``, ``SPARSE_FLOAT_VECTOR``
+
+    Scalar types:
+        ``BOOL``, ``INT8``, ``INT16``, ``INT32``, ``INT64``,
+        ``FLOAT``, ``DOUBLE``, ``VARCHAR``, ``ARRAY``, ``JSON``
+    """
+
+    # Scalar types
+    BOOL = 1
+    INT8 = 2
+    INT16 = 3
+    INT32 = 4
+    INT64 = 5
+    FLOAT = 10
+    DOUBLE = 11
+    VARCHAR = 21
+    ARRAY = 22
+    JSON = 23
+
+    # Vector types
+    BINARY_VECTOR = 100
+    FLOAT_VECTOR = 101
+    FLOAT16_VECTOR = 102
+    BFLOAT16_VECTOR = 103
+    SPARSE_FLOAT_VECTOR = 104
+
+
+def _resolve_milvus_dtype(value: MilvusType) -> Any:
+    """Convert a ``MilvusType`` to ``pymilvus.DataType``."""
+    from pymilvus import DataType
+
+    if not isinstance(value, MilvusType):
+        raise TypeError(
+            f"Expected pw.io.milvus.MilvusType, got {type(value).__name__}."
+        )
+    return DataType(int(value))
+
+
+class _OutputBuffer:
     """Buffers row changes and flushes them to a Milvus collection in batches."""
 
     def __init__(
@@ -23,8 +70,7 @@ class _MilvusOutputBuffer:
         uri: str,
         collection_name: str,
         primary_key_column: str,
-        vector_column: str,
-        dimension: int,
+        vector_columns: dict[str, dict[str, Any]],
         token: str | None,
         create_collection_if_missing: bool,
         max_batch_size: int,
@@ -33,8 +79,7 @@ class _MilvusOutputBuffer:
 
         self._collection_name = collection_name
         self._primary_key_column = primary_key_column
-        self._vector_column = vector_column
-        self._dimension = dimension
+        self._vector_columns = vector_columns
         self._max_batch_size = max_batch_size
 
         connect_kwargs: dict[str, Any] = {"uri": uri}
@@ -123,15 +168,44 @@ class _MilvusOutputBuffer:
             self._delete_buffer = []
 
     def _ensure_collection_exists(self) -> None:
+        from pymilvus import CollectionSchema, DataType, FieldSchema
+
         if self._client.has_collection(self._collection_name):
             return
+
+        fields = [
+            FieldSchema(
+                name=self._primary_key_column,
+                dtype=DataType.INT64,
+                is_primary=True,
+                auto_id=False,
+            ),
+        ]
+        for col_name, config in self._vector_columns.items():
+            kwargs: dict[str, Any] = {
+                "name": col_name,
+                "dtype": _resolve_milvus_dtype(config["type"]),
+            }
+            if "dimension" in config:
+                kwargs["dim"] = config["dimension"]
+            fields.append(FieldSchema(**kwargs))
+
+        schema = CollectionSchema(fields=fields, enable_dynamic_field=True)
         self._client.create_collection(
-            collection_name=self._collection_name,
-            dimension=self._dimension,
-            primary_field_name=self._primary_key_column,
-            vector_field_name=self._vector_column,
-            auto_id=False,
+            collection_name=self._collection_name, schema=schema
         )
+
+        index_params = self._client.prepare_index_params()
+        for col_name, config in self._vector_columns.items():
+            index_params.add_index(
+                field_name=col_name,
+                index_type=config.get("index_type", "AUTOINDEX"),
+                metric_type=config.get("metric_type", "IP"),
+            )
+        self._client.create_index(
+            collection_name=self._collection_name, index_params=index_params
+        )
+        self._client.load_collection(self._collection_name)
 
 
 def write(
@@ -140,8 +214,7 @@ def write(
     uri: str = "http://localhost:19530",
     collection_name: str,
     primary_key_column: str,
-    vector_column: str,
-    dimension: int,
+    vector_columns: dict[str, dict[str, Any]],
     token: str | None = None,
     create_collection_if_missing: bool = True,
     max_batch_size: int = 1024,
@@ -157,9 +230,13 @@ def write(
     by using upsert operations and filtering out spurious deletes.
 
     If the target collection does not exist and ``create_collection_if_missing`` is
-    ``True`` (the default), the connector will create it automatically with the
-    specified ``dimension``, ``primary_key_column``, and ``vector_column``. Additional
-    columns are stored as dynamic fields (requires Milvus 2.4+).
+    ``True`` (the default), the connector will create it automatically using the
+    vector field definitions in ``vector_columns``. Additional columns are stored
+    as dynamic fields (requires Milvus 2.4+).
+
+    Supports all Milvus vector types (``FLOAT_VECTOR``, ``FLOAT16_VECTOR``,
+    ``BFLOAT16_VECTOR``, ``INT8_VECTOR``, ``BINARY_VECTOR``,
+    ``SPARSE_FLOAT_VECTOR``) and up to 10 vector fields per collection.
 
     This connector requires the ``pymilvus`` package. Install it with:
 
@@ -175,10 +252,13 @@ def write(
         collection_name: The name of the Milvus collection to write to.
         primary_key_column: The name of the Pathway column to use as the Milvus
             primary key. Must be of ``int`` or ``str`` type.
-        vector_column: The name of the Pathway column containing the vector
-            embeddings. Values should be numpy arrays or lists of floats.
-        dimension: The dimensionality of the vector embeddings (e.g. 1024 for
-            ``text-embedding-3-small``).
+        vector_columns: A dict mapping Pathway column names to their Milvus vector
+            field configuration. Each value is a dict with:
+
+            - ``type`` (required): a :py:class:`MilvusType` vector variant
+            - ``dimension`` (required for dense/binary types, omitted for sparse)
+            - ``index_type`` (optional, default ``"AUTOINDEX"``)
+            - ``metric_type`` (optional, default ``"IP"``)
         token: Optional authentication token. Required for Zilliz Cloud and
             authenticated Milvus deployments.
         create_collection_if_missing: If ``True`` (the default), automatically create
@@ -204,7 +284,7 @@ def write(
 
         docker run -d --name milvus-standalone -p 19530:19530 milvusdb/milvus:latest milvus run standalone
 
-    Once Milvus is running, you can write a Pathway table with vector embeddings to it:
+    Single-vector usage:
 
     >>> import pathway as pw  # doctest: +SKIP
     >>> table = pw.debug.table_from_markdown(  # doctest: +SKIP
@@ -216,57 +296,61 @@ def write(
     ... )
     >>> pw.io.milvus.write(  # doctest: +SKIP
     ...     table,
-    ...     uri="http://localhost:19530",
     ...     collection_name="documents",
     ...     primary_key_column="doc_id",
-    ...     vector_column="vector",
-    ...     dimension=3,
+    ...     vector_columns={
+    ...         "vector": {"type": pw.io.milvus.MilvusType.FLOAT_VECTOR, "dimension": 3},
+    ...     },
     ... )
     >>> pw.run()  # doctest: +SKIP
 
-    For Zilliz Cloud, provide the endpoint URI and API token:
+    Multi-vector (dense + sparse) for hybrid search:
 
-    >>> pw.io.milvus.write(  # doctest: +SKIP
-    ...     table,
-    ...     uri="https://in01-xxxx.api.gcp-us-west1.zillizcloud.com",
-    ...     token="your-api-key",
-    ...     collection_name="documents",
-    ...     primary_key_column="doc_id",
-    ...     vector_column="vector",
-    ...     dimension=3,
+    >>> import pathway as pw  # doctest: +SKIP
+    >>> table = pw.debug.table_from_markdown(  # doctest: +SKIP
+    ...     '''
+    ...     | doc_id | text    | dense_vector     | sparse_vector
+    ...     1 | 1      | "hello" | [0.1, 0.2, 0.3]  | {0: 1.0, 5: 0.5}
+    ...     2 | 2      | "world" | [0.4, 0.5, 0.6]  | {1: 0.8, 3: 0.2}
+    ...     '''
     ... )
-    >>> pw.run()  # doctest: +SKIP
-
-    For local testing without a Milvus server, use Milvus Lite:
-
     >>> pw.io.milvus.write(  # doctest: +SKIP
     ...     table,
-    ...     uri="./local_milvus.db",
-    ...     collection_name="documents",
+    ...     collection_name="hybrid_docs",
     ...     primary_key_column="doc_id",
-    ...     vector_column="vector",
-    ...     dimension=3,
+    ...     vector_columns={
+    ...         "dense_vector": {"type": pw.io.milvus.MilvusType.FLOAT_VECTOR, "dimension": 3},
+    ...         "sparse_vector": {"type": pw.io.milvus.MilvusType.SPARSE_FLOAT_VECTOR},
+    ...     },
     ... )
     >>> pw.run()  # doctest: +SKIP
     """
+    if not vector_columns:
+        raise ValueError("vector_columns must contain at least one vector field.")
+
     column_names = table.schema.column_names()
     if primary_key_column not in column_names:
         raise ValueError(
             f"Column '{primary_key_column}' not found in table schema. "
             f"Available columns: {column_names}"
         )
-    if vector_column not in column_names:
-        raise ValueError(
-            f"Column '{vector_column}' not found in table schema. "
-            f"Available columns: {column_names}"
-        )
+    for col_name, config in vector_columns.items():
+        if col_name not in column_names:
+            raise ValueError(
+                f"Vector column '{col_name}' not found in table schema. "
+                f"Available columns: {column_names}"
+            )
+        if "type" not in config:
+            raise ValueError(
+                f"Vector column '{col_name}' is missing required 'type' key. "
+                f"Provide a pw.io.milvus.MilvusType vector variant."
+            )
 
-    output_buffer = _MilvusOutputBuffer(
+    output_buffer = _OutputBuffer(
         uri=uri,
         collection_name=collection_name,
         primary_key_column=primary_key_column,
-        vector_column=vector_column,
-        dimension=dimension,
+        vector_columns=vector_columns,
         token=token,
         create_collection_if_missing=create_collection_if_missing,
         max_batch_size=max_batch_size,

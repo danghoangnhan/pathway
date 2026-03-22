@@ -80,15 +80,16 @@ def main():
 
     # Write to Milvus — all CDC operations propagate automatically:
     #   INSERT  → Milvus upsert
-    #   UPDATE  → _MilvusOutputBuffer.on_time_end filters spurious delete → upsert
+    #   UPDATE  → _OutputBuffer.on_time_end filters spurious delete → upsert
     #   DELETE  → Milvus delete
     pw.io.milvus.write(
         embedded,
         uri=MILVUS_URI,
         collection_name=COLLECTION_NAME,
         primary_key_column="product_id",
-        vector_column="vector",
-        dimension=DIMENSION,
+        vector_columns={
+            "vector": {"type": pw.io.milvus.MilvusType.FLOAT_VECTOR, "dimension": DIMENSION},
+        },
     )
 
     print("Pipeline running. Listening for CDC events...")

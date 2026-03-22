@@ -12,7 +12,7 @@ documents.jsonl         Pathway Pipeline              Milvus
 │ (ambiguous   │    │     (384-dim dense)  │    │              │
 │  keywords)   │    │  → TF hash UDF       │    │ dense_vector │
 │              │    │     (sparse vector)  │    │ sparse_vector│
-└──────────────┘    │  → write_hybrid()    │    └──────────────┘
+└──────────────┘    │  → milvus.write()    └──────────────┘
                     └──────────────────────┘
 ```
 
@@ -32,7 +32,7 @@ The demo data deliberately includes documents where the same keyword appears in 
 ## Key Features
 
 - **Dual embedding pipeline**: Dense (SentenceTransformer) + sparse (hash-based TF) computed in a single `select()`
-- **Custom Milvus writer**: Extends `pw.io.subscribe()` to support multi-vector collections (since `pw.io.milvus.write()` supports a single vector field)
+- **Multi-vector Milvus writer**: Uses `pw.io.milvus.write()` to write both dense and sparse vectors to a multi-vector collection
 - **Four search modes**: Dense-only, sparse-only, WeightedRanker hybrid, RRFRanker hybrid
 - **No API keys**: SentenceTransformerEmbedder runs locally
 
@@ -55,14 +55,13 @@ The sparse embedding uses feature hashing (also called the "hashing trick"):
 
 This produces a `{int: float}` dict that pymilvus stores as `SPARSE_FLOAT_VECTOR`. No global vocabulary is needed, making it suitable for streaming pipelines.
 
-## Custom Writer vs Built-in Writer
+## Multi-Vector Writer
 
-The built-in `pw.io.milvus.write()` creates collections with a single vector field. This example includes `hybrid_milvus_writer.py` which:
+This example uses `pw.io.milvus.write()` with multiple entries in `vector_columns` to create a collection with both dense and sparse vector fields:
 
-- Creates a collection with explicit `FieldSchema` for both `FLOAT_VECTOR` and `SPARSE_FLOAT_VECTOR`
+- Creates a collection with `FLOAT_VECTOR` and `SPARSE_FLOAT_VECTOR` fields
 - Indexes: `AUTOINDEX` (IP) for dense, `SPARSE_INVERTED_INDEX` (IP) for sparse
-- Follows the same `on_change`/`on_time_end` buffering pattern from the built-in connector
-- Supports upsert and delete propagation
+- Reuses the same buffered upsert/delete pattern from the built-in connector
 
 ## Docker Services
 

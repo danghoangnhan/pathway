@@ -135,8 +135,9 @@ def main():
         uri=MILVUS_URI,
         collection_name=COLLECTION_NAME,
         primary_key_column="doc_id",
-        vector_column="vector",
-        dimension=DIMENSION,
+        vector_columns={
+            "vector": {"type": pw.io.milvus.MilvusType.FLOAT_VECTOR, "dimension": DIMENSION},
+        },
     )
 
     # Run the pipeline
