@@ -1,7 +1,6 @@
 pub mod file_like;
 pub mod iceberg;
 pub mod kafka;
-pub mod mssql;
 pub mod parquet;
 pub mod postgres;
 pub mod sqlite;
@@ -22,9 +21,6 @@ pub use parquet::ParquetMetadata;
 pub use postgres::PostgresMetadata;
 
 #[allow(clippy::module_name_repetitions)]
-pub use mssql::MssqlMetadata;
-
-#[allow(clippy::module_name_repetitions)]
 pub use sqlite::SQLiteMetadata;
 
 #[allow(clippy::module_name_repetitions)]
@@ -32,7 +28,6 @@ pub use sqlite::SQLiteMetadata;
 pub enum SourceMetadata {
     FileLike(FileLikeMetadata),
     Kafka(KafkaMetadata),
-    Mssql(MssqlMetadata),
     SQLite(SQLiteMetadata),
     Iceberg(IcebergMetadata),
     Parquet(ParquetMetadata),
@@ -69,12 +64,6 @@ impl From<PostgresMetadata> for SourceMetadata {
     }
 }
 
-impl From<MssqlMetadata> for SourceMetadata {
-    fn from(impl_: MssqlMetadata) -> Self {
-        Self::Mssql(impl_)
-    }
-}
-
 impl From<SQLiteMetadata> for SourceMetadata {
     fn from(impl_: SQLiteMetadata) -> Self {
         Self::SQLite(impl_)
@@ -86,7 +75,6 @@ impl SourceMetadata {
         match self {
             Self::FileLike(meta) => serde_json::to_value(meta),
             Self::Kafka(meta) => serde_json::to_value(meta),
-            Self::Mssql(meta) => serde_json::to_value(meta),
             Self::SQLite(meta) => serde_json::to_value(meta),
             Self::Iceberg(meta) => serde_json::to_value(meta),
             Self::Parquet(meta) => serde_json::to_value(meta),
@@ -98,7 +86,6 @@ impl SourceMetadata {
     pub fn commits_allowed_in_between(&self) -> bool {
         match self {
             Self::FileLike(_)
-            | Self::Mssql(_)
             | Self::SQLite(_)
             | Self::Iceberg(_)
             | Self::Parquet(_)

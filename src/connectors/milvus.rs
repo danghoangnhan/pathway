@@ -50,7 +50,6 @@ struct BufferedRow {
 enum FieldValue {
     Bool(bool),
     Int64(i64),
-    Float(f32),
     Double(f64),
     String(String),
     FloatVector(Vec<f32>),

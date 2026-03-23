@@ -106,7 +106,6 @@ pub use super::data_lake::delta::{
 pub use super::data_lake::iceberg::IcebergReader;
 pub use super::data_lake::LakeWriter;
 pub use super::elasticsearch::ElasticSearchWriter;
-pub use super::mssql::{MssqlCdcReader, MssqlReader};
 pub use super::nats::NatsReader;
 pub use super::nats::NatsWriter;
 pub use super::postgres::{
@@ -427,7 +426,6 @@ pub enum StorageType {
     Iceberg,
     Mqtt,
     Kinesis,
-    Mssql,
     Postgres,
 }
 
@@ -451,7 +449,6 @@ impl StorageType {
             StorageType::Iceberg => IcebergReader::merge_two_frontiers(lhs, rhs),
             StorageType::Mqtt => MqttReader::merge_two_frontiers(lhs, rhs),
             StorageType::Kinesis => KinesisReader::merge_two_frontiers(lhs, rhs),
-            StorageType::Mssql => MssqlReader::merge_two_frontiers(lhs, rhs),
             StorageType::Postgres => PsqlReader::merge_two_frontiers(lhs, rhs),
         }
     }
