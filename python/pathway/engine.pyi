@@ -899,6 +899,7 @@ class DataStorage:
         snapshot_maintenance_on_output: bool = False,
         aws_s3_settings: AwsS3Settings | None = None,
         elasticsearch_params: ElasticSearchParams | None = None,
+        milvus_params: MilvusParams | None = None,
         parallel_readers: int | None = None,
         python_subject: PythonSubject | None = None,
         unique_name: str | None = None,
@@ -972,6 +973,17 @@ class ElasticSearchAuth:
 
 class ElasticSearchParams:
     def __init__(self, *args, **kwargs): ...
+
+class MilvusParams:
+    def __init__(
+        self,
+        uri: str,
+        collection_name: str,
+        primary_key_column: str,
+        vector_columns: dict[str, dict[str, str]],
+        token: str | None = None,
+        create_collection_if_missing: bool = True,
+    ): ...
 
 class PersistenceConfig:
     def __init__(self, *args, **kwargs): ...

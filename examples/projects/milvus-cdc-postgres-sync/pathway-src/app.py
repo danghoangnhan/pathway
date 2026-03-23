@@ -80,7 +80,7 @@ def main():
 
     # Write to Milvus — all CDC operations propagate automatically:
     #   INSERT  → Milvus upsert
-    #   UPDATE  → _OutputBuffer.on_time_end filters spurious delete → upsert
+    #   UPDATE  → CDC-aware flush filters spurious delete → upsert
     #   DELETE  → Milvus delete
     pw.io.milvus.write(
         embedded,

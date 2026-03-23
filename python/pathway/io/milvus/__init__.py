@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import enum
-import logging
 from typing import TYPE_CHECKING, Any, Iterable
 
-import numpy as np
-
 from pathway.internals.expression import ColumnReference
-from pathway.io._subscribe import subscribe
 
 if TYPE_CHECKING:
-    from pathway.internals.api import Pointer
     from pathway.internals.table import Table
 
 
@@ -51,163 +46,6 @@ class MilvusType(enum.IntEnum):
     SPARSE_FLOAT_VECTOR = 104
 
 
-def _resolve_milvus_dtype(value: MilvusType) -> Any:
-    """Convert a ``MilvusType`` to ``pymilvus.DataType``."""
-    from pymilvus import DataType
-
-    if not isinstance(value, MilvusType):
-        raise TypeError(
-            f"Expected pw.io.milvus.MilvusType, got {type(value).__name__}."
-        )
-    return DataType(int(value))
-
-
-class _OutputBuffer:
-    """Buffers row changes and flushes them to a Milvus collection in batches."""
-
-    def __init__(
-        self,
-        uri: str,
-        collection_name: str,
-        primary_key_column: str,
-        vector_columns: dict[str, dict[str, Any]],
-        token: str | None,
-        create_collection_if_missing: bool,
-        max_batch_size: int,
-    ) -> None:
-        from pymilvus import MilvusClient
-
-        self._collection_name = collection_name
-        self._primary_key_column = primary_key_column
-        self._vector_columns = vector_columns
-        self._max_batch_size = max_batch_size
-
-        connect_kwargs: dict[str, Any] = {"uri": uri}
-        if token is not None:
-            connect_kwargs["token"] = token
-        self._client = MilvusClient(**connect_kwargs)
-
-        if create_collection_if_missing:
-            self._ensure_collection_exists()
-
-        self._upsert_buffer: list[dict[str, Any]] = []
-        self._delete_buffer: list[Any] = []
-
-    def on_change(
-        self, key: Pointer, row: dict[str, Any], time: int, is_addition: bool
-    ) -> None:
-        if is_addition:
-            prepared = self._prepare_row(row)
-            self._upsert_buffer.append(prepared)
-            if len(self._upsert_buffer) >= self._max_batch_size:
-                self._flush_upserts()
-        else:
-            pk_value = row[self._primary_key_column]
-            self._delete_buffer.append(pk_value)
-            if len(self._delete_buffer) >= self._max_batch_size:
-                self._flush_deletes()
-
-    def on_time_end(self, time: int) -> None:
-        # PKs present in both buffers are updates (delete old + insert new),
-        # not true deletes. Only delete PKs that are not being re-inserted.
-        upserted_pks = {
-            row[self._primary_key_column] for row in self._upsert_buffer
-        }
-        true_deletes = [pk for pk in self._delete_buffer if pk not in upserted_pks]
-
-        if self._upsert_buffer:
-            self._flush_upserts()
-        if true_deletes:
-            self._delete_buffer = true_deletes
-            self._flush_deletes()
-        else:
-            self._delete_buffer = []
-
-    def _prepare_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Convert numpy arrays to Python lists for pymilvus compatibility."""
-        result = {}
-        for k, v in row.items():
-            if isinstance(v, np.ndarray):
-                result[k] = v.tolist()
-            else:
-                result[k] = v
-        return result
-
-    def _flush_upserts(self) -> None:
-        try:
-            self._client.upsert(
-                collection_name=self._collection_name,
-                data=self._upsert_buffer,
-            )
-        except Exception:
-            logging.error(
-                "Failed to upsert %d rows into Milvus collection '%s'",
-                len(self._upsert_buffer),
-                self._collection_name,
-                exc_info=True,
-            )
-            raise
-        finally:
-            self._upsert_buffer = []
-
-    def _flush_deletes(self) -> None:
-        try:
-            self._client.delete(
-                collection_name=self._collection_name,
-                pks=self._delete_buffer,
-            )
-        except Exception:
-            logging.error(
-                "Failed to delete %d rows from Milvus collection '%s'",
-                len(self._delete_buffer),
-                self._collection_name,
-                exc_info=True,
-            )
-            raise
-        finally:
-            self._delete_buffer = []
-
-    def _ensure_collection_exists(self) -> None:
-        from pymilvus import CollectionSchema, DataType, FieldSchema
-
-        if self._client.has_collection(self._collection_name):
-            return
-
-        fields = [
-            FieldSchema(
-                name=self._primary_key_column,
-                dtype=DataType.INT64,
-                is_primary=True,
-                auto_id=False,
-            ),
-        ]
-        for col_name, config in self._vector_columns.items():
-            kwargs: dict[str, Any] = {
-                "name": col_name,
-                "dtype": _resolve_milvus_dtype(config["type"]),
-            }
-            if "dimension" in config:
-                kwargs["dim"] = config["dimension"]
-            fields.append(FieldSchema(**kwargs))
-
-        schema = CollectionSchema(fields=fields, enable_dynamic_field=True)
-        self._client.create_collection(
-            collection_name=self._collection_name, schema=schema
-        )
-
-        index_params = self._client.prepare_index_params()
-        for col_name, config in self._vector_columns.items():
-            index_params.add_index(
-                field_name=col_name,
-                index_type=config.get("index_type", "AUTOINDEX"),
-                metric_type=config.get("metric_type", "IP"),
-            )
-        self._client.create_index(
-            collection_name=self._collection_name, index_params=index_params
-        )
-        self._client.load_collection(self._collection_name)
-
-
 def write(
     table: Table,
     *,
@@ -237,12 +75,6 @@ def write(
     Supports all Milvus vector types (``FLOAT_VECTOR``, ``FLOAT16_VECTOR``,
     ``BFLOAT16_VECTOR``, ``INT8_VECTOR``, ``BINARY_VECTOR``,
     ``SPARSE_FLOAT_VECTOR``) and up to 10 vector fields per collection.
-
-    This connector requires the ``pymilvus`` package. Install it with:
-
-    .. code-block:: bash
-
-        pip install "pymilvus>=2.5.0"
 
     Args:
         table: The table to output.
@@ -346,19 +178,49 @@ def write(
                 f"Provide a pw.io.milvus.MilvusType vector variant."
             )
 
-    output_buffer = _OutputBuffer(
-        uri=uri,
-        collection_name=collection_name,
-        primary_key_column=primary_key_column,
-        vector_columns=vector_columns,
-        token=token,
-        create_collection_if_missing=create_collection_if_missing,
+    # Convert vector_columns to string-only dicts for the Rust bridge
+    vector_columns_str: dict[str, dict[str, str]] = {}
+    for col_name, config in vector_columns.items():
+        col_config: dict[str, str] = {}
+        milvus_type = config["type"]
+        if isinstance(milvus_type, MilvusType):
+            col_config["type"] = milvus_type.name
+        else:
+            col_config["type"] = str(milvus_type)
+        if "dimension" in config:
+            col_config["dimension"] = str(config["dimension"])
+        if "index_type" in config:
+            col_config["index_type"] = str(config["index_type"])
+        if "metric_type" in config:
+            col_config["metric_type"] = str(config["metric_type"])
+        vector_columns_str[col_name] = col_config
+
+    import pathway.engine as api
+    from pathway.internals import datasink
+    from pathway.internals._io_helpers import _format_output_value_fields
+
+    data_storage = api.DataStorage(
+        storage_type="milvus",
+        milvus_params=api.MilvusParams(
+            uri=uri,
+            collection_name=collection_name,
+            primary_key_column=primary_key_column,
+            vector_columns=vector_columns_str,
+            token=token,
+            create_collection_if_missing=create_collection_if_missing,
+        ),
         max_batch_size=max_batch_size,
     )
-    subscribe(
-        table,
-        on_change=output_buffer.on_change,
-        on_time_end=output_buffer.on_time_end,
-        name=name,
-        sort_by=sort_by,
+    data_format = api.DataFormat(
+        format_type="identity",
+        value_fields=_format_output_value_fields(table),
+    )
+    table.to(
+        datasink.GenericDataSink(
+            data_storage,
+            data_format,
+            datasink_name="milvus",
+            unique_name=name,
+            sort_by=sort_by,
+        )
     )
